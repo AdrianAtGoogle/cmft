@@ -1318,7 +1318,8 @@ namespace cmft
 
         // Get color in rgba32f format.
         float color[4];
-        toRgba32f(color, TextureFormat::RGBA8, &_rgba);
+        const uint32_t abgr = cmft::endianSwap(_rgba);
+        toRgba32f(color, TextureFormat::RGBA8, &abgr);
 
         // Fill data with specified color.
         float* dstPtr = (float*)dstData;
@@ -2100,8 +2101,8 @@ namespace cmft
         vecToTexelCoord(uu, vv, face, _dir);
 
         const float sizeMinusOne = float(int32_t(_image.m_width-1));
-        const int32_t xx = int32_t(uu*sizeMinusOne);
-        const int32_t yy = int32_t(vv*sizeMinusOne);
+        const int32_t xx = int32_t(uu*sizeMinusOne + 0.5f);
+        const int32_t yy = int32_t(vv*sizeMinusOne + 0.5f);
 
         imageGetPixel(_out, _format, xx, yy, face, _mip, _image);
     }
@@ -2507,6 +2508,63 @@ namespace cmft
         }
     }
 
+	void imageRemapAxes(Image& _image, const float _xAxis[3], const float _yAxis[3], const float _zAxis[3], AllocatorI* _allocator)
+	{
+		Image imageCloned;
+		//imageConvert(imageRgba32f, TextureFormat::RGBA32F, _image, _allocator);
+		imageCopy(imageCloned, _image, _allocator);
+
+		const float cfs = float(int32_t(_image.m_height));
+		const float invCfs = 1.0f / cfs;
+
+		const uint32_t bytesPerPixel = getImageDataInfo(_image.m_format).m_bytesPerPixel;
+		const uint32_t pitch = _image.m_width * bytesPerPixel;
+
+		for (uint8_t face = 0; face < 6; ++face)
+		{
+			float yyf = 1.0f;
+			for (uint32_t yy = 0; yy < _image.m_height; ++yy, yyf += 2.0f)
+			{
+				float xxf = 1.0f;
+				for (uint32_t xx = 0; xx < _image.m_width; ++xx, xxf += 2.0f)
+				{
+					// From [0..size-1] to [-1.0+invSize .. 1.0-invSize].
+					// Ref: uu = 2.0*(xxf+0.5)/faceSize - 1.0;
+					//      vv = 2.0*(yyf+0.5)/faceSize - 1.0;
+					const float uu = xxf*invCfs - 1.0f;
+					const float vv = yyf*invCfs - 1.0f;
+
+					float vecTarget[3];
+
+					texelCoordToVec(vecTarget, uu, vv, face);
+
+					float vecSource[3] = {
+						_xAxis[0] * vecTarget[0] + _yAxis[0] * vecTarget[1] + _zAxis[0] * vecTarget[2],
+						_xAxis[1] * vecTarget[0] + _yAxis[1] * vecTarget[1] + _zAxis[1] * vecTarget[2],
+						_xAxis[2] * vecTarget[0] + _yAxis[2] * vecTarget[1] + _zAxis[2] * vecTarget[2],
+					};
+
+					float uuSource;
+					float vvSource;
+					uint8_t faceSource;
+					vecToTexelCoord(uuSource, vvSource, faceSource, vecSource);
+
+					const float sizeMinusOne = float(int32_t(_image.m_width - 1));
+					const int32_t xxSource = int32_t(uuSource*sizeMinusOne + 0.5f);
+					const int32_t yySource = int32_t(vvSource*sizeMinusOne + 0.5f);
+
+					uint32_t destFaceOffset = face*(_image.m_width * _image.m_height * bytesPerPixel);
+					uint32_t sourceFaceOffset = faceSource*(_image.m_width * _image.m_height * bytesPerPixel);
+
+					void* dest = (void*)((const uint8_t*)_image.m_data + destFaceOffset + yy*pitch + xx*bytesPerPixel);
+					void* source = (void*)((const uint8_t*)imageCloned.m_data + sourceFaceOffset + yySource*pitch + xxSource*bytesPerPixel);
+
+					memcpy(dest, source, bytesPerPixel);
+				}
+			}
+		}
+	}
+
     void imageGenerateMipMapChain(Image& _image, uint8_t _numMips, AllocatorI* _allocator)
     {
         // Processing is done in rgba32f format.
@@ -2651,20 +2709,15 @@ namespace cmft
         float rgbm[4];
         for (; channel < end; channel += 4)
         {
-            // convert to gamma space before encoding
-            channel[0] = ToSRGBApprox(channel[0]);
-            channel[1] = ToSRGBApprox(channel[1]);
-            channel[2] = ToSRGBApprox(channel[2]);
-            channel[3] = ToSRGBApprox(channel[3]);
-
             memcpy( rgbm, channel, 4*sizeof(float) );
 
             rgbm[0] /= 6.0f;
             rgbm[1] /= 6.0f;
             rgbm[2] /= 6.0f;
+			const float minIntensity = 1.0f / 255.0f;
 
-            float m = fsaturate(fmaxf(fmaxf(rgbm[0], rgbm[1]), fmaxf(rgbm[2], 1e-6f)));
-            m = ceil(rgbm[3] * 255.0f) / 255.0f;
+            float m = fsaturate(fmaxf(fmaxf(rgbm[0], rgbm[1]), fmaxf(rgbm[2], minIntensity)));
+            m = ceil(m * 255.0f) / 255.0f;
             rgbm[0] /= m;
             rgbm[1] /= m;
             rgbm[2] /= m;
@@ -2719,6 +2772,40 @@ namespace cmft
         // Cleanup.
         imageUnload(imageRgba32f, _allocator);
     }
+
+	void imageApplyScale(Image& _image, float _scale, AllocatorI* _allocator)
+	{
+		// Do nothing if _scale is ~= 1.0f.
+		if (cmft::equals(_scale, 1.0, 0.0001f))
+		{
+			return;
+		}
+
+		// Operation is done in rgba32f format.
+		ImageHardRef imageRgba32f;
+		imageRefOrConvert(imageRgba32f, TextureFormat::RGBA32F, _image, _allocator);
+
+		// Iterate through image channels and apply gamma function.
+		float* channel = (float*)imageRgba32f.m_data;
+		const float* end = (const float*)((const uint8_t*)imageRgba32f.m_data + imageRgba32f.m_dataSize);
+
+		for (; channel < end; channel += 4)
+		{
+			channel[0] = channel[0] * _scale;
+			channel[1] = channel[1] * _scale;
+			channel[2] = channel[2] * _scale;
+			//channel[3] = leave alpha channel as is.
+		}
+
+		// If image was converted, convert back to original format.
+		if (imageRgba32f.isCopy())
+		{
+			imageConvert(_image, (TextureFormat::Enum)_image.m_format, imageRgba32f, _allocator);
+		}
+
+		// Cleanup.
+		imageUnload(imageRgba32f, _allocator);
+	}
 
     void imageClamp(Image& _dst, const Image& _src, AllocatorI* _allocator)
     {

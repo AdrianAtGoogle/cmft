@@ -2099,7 +2099,7 @@ namespace cmft
                 const float mipFaceSizef = float(int32_t(mipFaceSize));
                 const float minAngle = atan2f(1.0f, mipFaceSizef);
                 const float maxAngle = (0.5f*CMFT_PI);
-                const float toFilterSize = 1.0f/(minAngle*mipFaceSizef*2.0f);
+                const float toFilterSize = 1.0f/(minAngle*mipFaceSizef);
                 const float specularPowerRef = specularPowerFor(float(int32_t(mip)), mipCountf, glossScalef, glossBiasf);
                 const float specularPower = applyLightningModel(specularPowerRef, _lightingModel);
                 const float filterAngle = CMFT_CLAMP(cosinePowerFilterAngle(specularPower), minAngle, maxAngle);

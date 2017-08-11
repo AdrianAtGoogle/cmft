@@ -32,6 +32,19 @@ struct FilterType
     };
 };
 
+struct CubemapAxisType
+{
+	enum Enum
+	{
+		posX,
+		negX,
+		posY,
+		negY,
+		posZ,
+		negZ,
+	};
+};
+
 struct CliOptionMap
 {
     char m_str[64];
@@ -124,6 +137,27 @@ static const CliOptionMap s_validOutputTypes[] =
     CLI_OPTION_MAP_TERMINATOR,
 };
 
+static const CliOptionMap s_validAxisRemaps[] =
+{
+	{ "x", CubemapAxisType::posX },
+	{ "y", CubemapAxisType::posY },
+	{ "z", CubemapAxisType::posZ },
+	{ "i", CubemapAxisType::negX },
+	{ "j", CubemapAxisType::negY },
+	{ "k", CubemapAxisType::negZ },
+	CLI_OPTION_MAP_TERMINATOR,
+};
+
+static const float s_axisDirections[6][3] =
+{
+	{ 1.f, 0.f, 0.f },
+	{-1.f, 0.f, 0.f },
+	{ 0.f, 1.f, 0.f },
+	{ 0.f,-1.f, 0.f },
+	{ 0.f, 0.f, 1.f },
+	{ 0.f, 0.f,-1.f },
+};
+
 bool valueFromOptionMap(uint32_t& _val, const CliOptionMap* _cliOptionMap, const char* _optionStr)
 {
     // Check for valid cliOptionMap.
@@ -194,6 +228,7 @@ struct InputParameters
     // Image Operations.
     float m_inputGammaPowNumerator;
     float m_inputGammaPowDenominator;
+	float m_inputScale;
     float m_outputGammaPowNumerator;
     float m_outputGammaPowDenominator;
     bool m_generateMipMapChain;
@@ -205,6 +240,9 @@ struct InputParameters
     uint32_t m_imageOpNegX;
     uint32_t m_imageOpNegY;
     uint32_t m_imageOpNegZ;
+
+	// Cubemap axis remap
+	uint32_t m_cubeAxes[3];
 
     // Filter parameters.
     uint32_t m_filterType;
@@ -252,6 +290,7 @@ void inputParametersFromCommandLine(InputParameters& _inputParameters, const cmf
     _cmdLine.hasArg(_inputParameters.m_inputGammaPowNumerator,    '\0', "inputGamma");
     _cmdLine.hasArg(_inputParameters.m_inputGammaPowNumerator,    '\0', "inputGammaNumerator");
     _cmdLine.hasArg(_inputParameters.m_inputGammaPowDenominator,  '\0', "inputGammaDenominator");
+	_cmdLine.hasArg(_inputParameters.m_inputScale,				  '\0', "inputScale");
     _cmdLine.hasArg(_inputParameters.m_outputGammaPowNumerator,   '\0', "outputGamma");
     _cmdLine.hasArg(_inputParameters.m_outputGammaPowNumerator,   '\0', "outputGammaNumerator");
     _cmdLine.hasArg(_inputParameters.m_outputGammaPowDenominator, '\0', "outputGammaDenominator");
@@ -308,6 +347,16 @@ void inputParametersFromCommandLine(InputParameters& _inputParameters, const cmf
 
     // Filter type.
     valueFromOptionMap(_inputParameters.m_filterType, s_filterType, _cmdLine.findOption("filter"));
+
+	// cubemap axes
+	const char *AxisRemap = _cmdLine.findOption("cubeRemap", "xyz");
+	for (int Axis = 0; Axis < 3; Axis++)
+	{
+		char AxisString[2];
+		AxisString[0] = AxisRemap[Axis];
+		AxisString[1] = '\0';
+		valueFromOptionMap(_inputParameters.m_cubeAxes[Axis], s_validAxisRemaps, AxisString);
+	}
 
     // Filter parameters.
     _cmdLine.hasArg(_inputParameters.m_srcFaceSize, '\0', "srcFaceSize");
@@ -511,6 +560,7 @@ void inputParametersDefault(InputParameters& _inputParameters)
     // Image Operations.
     _inputParameters.m_inputGammaPowNumerator    = 1.0f;
     _inputParameters.m_inputGammaPowDenominator  = 1.0f;
+	_inputParameters.m_inputScale				 = 1.0f;
     _inputParameters.m_outputGammaPowNumerator   = 1.0f;
     _inputParameters.m_outputGammaPowDenominator = 1.0f;
     _inputParameters.m_generateMipMapChain       = false;
@@ -522,6 +572,10 @@ void inputParametersDefault(InputParameters& _inputParameters)
     _inputParameters.m_imageOpNegX = 0;
     _inputParameters.m_imageOpNegY = 0;
     _inputParameters.m_imageOpNegZ = 0;
+
+	_inputParameters.m_cubeAxes[0] = uint32_t(CubemapAxisType::posX);
+	_inputParameters.m_cubeAxes[1] = uint32_t(CubemapAxisType::posY);
+	_inputParameters.m_cubeAxes[2] = uint32_t(CubemapAxisType::posZ);
 
     // Filter parameters.
     _inputParameters.m_filterType    = 0;
@@ -831,6 +885,7 @@ void printHelp()
             "          <hdr_outputType> = [latlong,hcross,vcross,hstrip,vstrip,facelist,octant]\n"
             "    --silent                           Do not print any output.\n"
             "    --rgbm                             Encode image in RGBM.\n"
+			"    --cubeRemap <axes>				    Remap cube axes (xyz == positive, ijk == negative).\n"
 
             "\n"
             "Command line parameters are case insenitive (except for file names and paths).\n"
@@ -994,8 +1049,21 @@ int cmftMain(int _argc, char const* const* _argv)
                  , IMAGE_FACE_NEGATIVEZ | inputParameters.m_imageOpNegZ
                  );
 
+	//if (inputParameters.m_cubeAxes[0] != CubemapAxisType::posX || inputParameters.m_cubeAxes[1] != CubemapAxisType::posY || inputParameters.m_cubeAxes[2] != CubemapAxisType::posZ)
+	{
+		INFO("(performing axis remap) - axis indices are %d %d %d", inputParameters.m_cubeAxes[0], inputParameters.m_cubeAxes[1], inputParameters.m_cubeAxes[2]);
+		imageRemapAxes(image, s_axisDirections[inputParameters.m_cubeAxes[0]], s_axisDirections[inputParameters.m_cubeAxes[1]], s_axisDirections[inputParameters.m_cubeAxes[2]]);
+	}
+	//else
+	//{
+	//	INFO("(no axis remap)");
+	//}
+
     // Apply gamma on input image.
     imageApplyGamma(image, inputParameters.m_inputGammaPowNumerator / inputParameters.m_inputGammaPowDenominator);
+
+	// Apply scale on input image.
+	imageApplyScale(image, inputParameters.m_inputScale);
 
     // Filter cubemap.
     if (FilterType::Radiance == inputParameters.m_filterType)
@@ -1098,8 +1166,8 @@ int cmftMain(int _argc, char const* const* _argv)
         // Encode RGBM (using texture format)
         if( tf == TextureFormat::RGBM )
         {
-            INFO("Encoding RGBM");
-            imageEncodeRGBM(image);
+			WARN(" -- TF was RGBM");
+
             tf = TextureFormat::BGRA8;	// Change file format to BGRA8 for saving
         }
 
