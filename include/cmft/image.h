@@ -242,6 +242,7 @@ namespace cmft
     /// Notice: _argList should end with UINT32_MAX.
     void imageTransformArg(Image& _image, va_list _argList);
 
+	void imageRemapAxes(Image& _image, const float _xAxis[3], const float _yAxis[3], const float _zAxis[3], AllocatorI* _allocator = g_allocator);
     ///
     void imageGenerateMipMapChain(Image& _image, uint8_t _numMips=UINT8_MAX, AllocatorI* _allocator = g_allocator);
 
@@ -250,6 +251,9 @@ namespace cmft
 
     ///
     void imageApplyGamma(Image& _image, float _gammaPow, AllocatorI* _allocator = g_allocator);
+
+	///
+	void imageApplyScale(Image& _image, float _scale, AllocatorI* _allocator = g_allocator);
 
     ///
     void imageClamp(Image& _dst, const Image& _src, AllocatorI* _allocator = g_allocator);
